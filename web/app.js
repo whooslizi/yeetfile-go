@@ -1,5 +1,10 @@
+import { Adb, LinuxFileType } from 'https://esm.sh/@yume-chan/adb';
+import { AdbDaemonWebUsbDeviceManager } from 'https://esm.sh/@yume-chan/adb-daemon-webusb';
+import AdbWebCredentialStore from 'https://esm.sh/@yume-chan/adb-credential-web';
+import { WrapConsumableStream, WrapReadableStream } from 'https://esm.sh/@yume-chan/stream-extra';
+
 (function () {
-  let currentSerial = '';
+  let adbInstance = null;
   let currentPath = '/sdcard';
   let history = [];
   let historyIdx = -1;
@@ -48,26 +53,28 @@
   const btnCloseUpload = $('#btn-close-upload');
   const btnStartUpload = $('#btn-start-upload');
 
-  async function api(url, opts) {
-    try {
-      const res = await fetch(url, opts);
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'HTTP ' + res.status);
-      }
-      return res.json();
-    } catch (e) {
-      toast(e.message, 'error');
-      throw e;
-    }
-  }
+  const defaultQuickPaths = [
+    { Name: 'DCIM', Path: '/sdcard/DCIM' },
+    { Name: 'Pictures', Path: '/sdcard/Pictures' },
+    { Name: 'Downloads', Path: '/sdcard/Download' },
+    { Name: 'Music', Path: '/sdcard/Music' },
+    { Name: 'Movies', Path: '/sdcard/Movies' },
+    { Name: 'Documents', Path: '/sdcard/Documents' },
+    { Name: 'Internal Storage', Path: '/sdcard' },
+  ];
 
   init();
 
   function init() {
-    btnScan.addEventListener('click', scanDevices);
+    if (!('usb' in navigator)) {
+      updateDeviceStatus(false, 'WebUSB not supported in this browser (Use Chrome/Edge/Brave)');
+      btnScan.disabled = true;
+      return;
+    }
+
+    btnScan.addEventListener('click', connectDevice);
     btnRefresh.addEventListener('click', () => {
-      if (currentSerial) loadFiles(currentPath);
+      if (adbInstance) loadFiles(currentPath);
     });
     btnBack.addEventListener('click', goBack);
     btnUp.addEventListener('click', goUp);
@@ -98,7 +105,7 @@
 
     document.addEventListener('dragover', (e) => {
       e.preventDefault();
-      if (currentSerial) dragOverlay.style.display = 'flex';
+      if (adbInstance) dragOverlay.style.display = 'flex';
     });
     document.addEventListener('dragleave', (e) => {
       if (e.relatedTarget === null) dragOverlay.style.display = 'none';
@@ -106,7 +113,7 @@
     document.addEventListener('drop', (e) => {
       e.preventDefault();
       dragOverlay.style.display = 'none';
-      if (currentSerial && e.dataTransfer.files.length) {
+      if (adbInstance && e.dataTransfer.files.length) {
         openUploadModal();
         addUploadFiles(e.dataTransfer.files);
       }
@@ -117,30 +124,60 @@
       if (menu) menu.remove();
     });
 
-    scanDevices();
+    renderQuickPaths(defaultQuickPaths);
+    checkAutoConnect();
   }
 
-  async function scanDevices() {
-    updateDeviceStatus(null, 'Scanning...');
+  async function checkAutoConnect() {
     try {
-      const data = await api('/api/devices');
-      const devices = data.devices || [];
-      renderQuickPaths(data.quickPaths || []);
-
-      if (!devices.length) {
-        updateDeviceStatus(false, 'No device connected');
-        return;
+      const manager = AdbDaemonWebUsbDeviceManager.BROWSER;
+      const devices = await manager.getDevices();
+      if (devices.length > 0) {
+        // Automatically try to connect to the first paired device
+        setupAdbConnection(devices[0]);
       }
+    } catch (e) {}
+  }
 
-      const online = devices.find(d => d.state === 'device');
-      if (online) {
-        selectDevice(online);
+  async function connectDevice() {
+    updateDeviceStatus(null, 'Requesting device...');
+    try {
+      const manager = AdbDaemonWebUsbDeviceManager.BROWSER;
+      const device = await manager.requestDevice();
+      if (device) {
+        setupAdbConnection(device);
       } else {
-        updateDeviceStatus(false, 'Device found but not authorized');
-        toast('Accept the USB debugging prompt on your phone', 'info');
+        updateDeviceStatus(false, 'No device selected');
       }
     } catch (e) {
-      updateDeviceStatus(false, 'Failed to scan');
+      updateDeviceStatus(false, 'Connection failed');
+      toast(e.message, 'error');
+    }
+  }
+
+  async function setupAdbConnection(device) {
+    updateDeviceStatus(null, 'Connecting...');
+    try {
+      const credentialStore = new AdbWebCredentialStore('yeetsend');
+      toast('Please accept the RSA prompt on your phone if it appears', 'info');
+
+      adbInstance = await Adb.authenticate({
+        serial: device.serial,
+        connection: await device.connect(),
+        credentialStore,
+      });
+
+      updateDeviceStatus(true, device.name || device.serial);
+      deviceNameEl.textContent = device.name || device.serial;
+
+      welcomeScreen.style.display = 'none';
+      browserScreen.style.display = 'flex';
+
+      loadStorageInfo();
+      navigateTo('/sdcard');
+    } catch (e) {
+      updateDeviceStatus(false, 'Authentication failed');
+      toast('Failed to pair: ' + e.message, 'error');
     }
   }
 
@@ -153,13 +190,12 @@
 
   function renderQuickPaths(paths) {
     quickPaths.innerHTML = paths.map(p => {
-      const name = p.Name.replace(/^[^\s]+\s/, '');
-      return `<div class="quick-path-item" data-path="${p.Path}">${name}</div>`;
+      return `<div class="quick-path-item" data-path="${p.Path}">${p.Name}</div>`;
     }).join('');
 
     quickPaths.querySelectorAll('.quick-path-item').forEach(el => {
       el.addEventListener('click', () => {
-        if (!currentSerial) {
+        if (!adbInstance) {
           toast('Connect a device first', 'info');
           return;
         }
@@ -168,37 +204,40 @@
     });
   }
 
-  function selectDevice(dev) {
-    currentSerial = dev.serial;
-
-    updateDeviceStatus(true, dev.model || dev.serial);
-    deviceNameEl.textContent = dev.model || dev.serial;
-
-    welcomeScreen.style.display = 'none';
-    browserScreen.style.display = 'flex';
-
-    loadStorageInfo();
-    navigateTo('/sdcard');
-  }
-
   async function loadStorageInfo() {
+    if (!adbInstance) return;
     try {
-      const data = await api('/api/storage-info?serial=' + currentSerial);
-      if (data && data.length > 0) {
-        const s = data[0];
-        const pct = s.total > 0 ? Math.round((s.used / s.total) * 100) : 0;
-        storageCard.style.display = 'block';
-        storageInfo.innerHTML = `
-          <div class="storage-bar-wrap">
-            <div class="storage-bar">
-              <div class="storage-bar-fill" style="width:${pct}%"></div>
+      const result = await adbInstance.subprocess.spawnAndWait(['df', '-h', '/sdcard']);
+      const output = new TextDecoder().decode(result.stdout);
+      const lines = output.trim().split('\n');
+      let dataLine = lines[1];
+      for (const line of lines) {
+        if (line.includes('/storage') || line.includes('/sdcard') || line.includes('/data')) {
+          dataLine = line;
+          break;
+        }
+      }
+      if (dataLine) {
+        const parts = dataLine.trim().split(/\s+/);
+        if (parts.length >= 4) {
+          const total = parts[1];
+          const used = parts[2];
+          const free = parts[3];
+          const pct = parts[4] ? parseInt(parts[4].replace('%', '')) : 50;
+
+          storageCard.style.display = 'block';
+          storageInfo.innerHTML = `
+            <div class="storage-bar-wrap">
+              <div class="storage-bar">
+                <div class="storage-bar-fill" style="width:${pct}%"></div>
+              </div>
+              <div class="storage-text">
+                <span>${used} used</span>
+                <span>${free} free (${total} total)</span>
+              </div>
             </div>
-            <div class="storage-text">
-              <span>${formatBytes(s.used)} used</span>
-              <span>${formatBytes(s.available)} free</span>
-            </div>
-          </div>
-        `;
+          `;
+        }
       }
     } catch (e) {}
   }
@@ -248,8 +287,29 @@
     emptyDir.style.display = 'none';
 
     try {
-      const data = await api('/api/files?serial=' + currentSerial + '&path=' + encodeURIComponent(path));
-      allFiles = data.files || [];
+      const sync = await adbInstance.sync();
+      try {
+        const entries = [];
+        for await (const entry of await sync.opendir(path)) {
+          entries.push(entry);
+        }
+
+        allFiles = entries.map(e => ({
+          name: e.name,
+          path: path === '/' ? '/' + e.name : path + '/' + e.name,
+          isDir: e.type === LinuxFileType.Directory,
+          size: Number(e.size),
+          modTime: formatTimestamp(e.mtime),
+        }));
+
+        allFiles.sort((a, b) => {
+          if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+          return a.name.localeCompare(b.name);
+        });
+      } finally {
+        await sync.dispose();
+      }
+
       loadingState.style.display = 'none';
 
       if (!allFiles.length) {
@@ -257,15 +317,11 @@
         return;
       }
 
-      allFiles.sort((a, b) => {
-        if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
-        return a.name.localeCompare(b.name);
-      });
-
       renderFiles();
     } catch (e) {
       loadingState.style.display = 'none';
       emptyDir.style.display = 'flex';
+      toast('Failed to load files: ' + e.message, 'error');
     }
   }
 
@@ -278,7 +334,7 @@
 
       if (isGridView) {
         const visual = isImg
-          ? `<img class="file-thumb" src="/api/thumbnail?serial=${currentSerial}&path=${encodeURIComponent(f.path)}" loading="lazy" alt="">`
+          ? `<img class="file-thumb" data-path="${f.path}" src="" loading="lazy" alt="">`
           : `<span class="file-icon">${icon}</span>`;
         return `
           <div class="file-item${sel}" data-index="${i}" data-path="${f.path}" data-dir="${f.isDir}">
@@ -289,7 +345,7 @@
         `;
       } else {
         const visual = isImg
-          ? `<img class="file-thumb" src="/api/thumbnail?serial=${currentSerial}&path=${encodeURIComponent(f.path)}" loading="lazy" alt="">`
+          ? `<img class="file-thumb" data-path="${f.path}" src="" loading="lazy" alt="">`
           : `<span class="file-icon">${icon}</span>`;
         return `
           <div class="file-item${sel}" data-index="${i}" data-path="${f.path}" data-dir="${f.isDir}">
@@ -329,6 +385,27 @@
         showContextMenu(e.clientX, e.clientY, allFiles[idx]);
       });
     });
+
+    loadThumbnails();
+  }
+
+  async function loadThumbnails() {
+    const imgs = $$('img.file-thumb[data-path]');
+    for (const img of imgs) {
+      if (img.src) continue;
+      const path = img.dataset.path;
+      try {
+        const sync = await adbInstance.sync();
+        try {
+          const stream = sync.read(path);
+          const response = new Response(stream);
+          const blob = await response.blob();
+          img.src = URL.createObjectURL(blob);
+        } finally {
+          await sync.dispose();
+        }
+      } catch (e) {}
+    }
   }
 
   function toggleSelect(file, el) {
@@ -391,15 +468,28 @@
     document.body.appendChild(menu);
   }
 
-  function downloadFile(file) {
-    const url = '/api/pull?serial=' + currentSerial + '&path=' + encodeURIComponent(file.path);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = file.name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+  async function downloadFile(file) {
     toast('Downloading ' + file.name, 'info');
+    try {
+      const sync = await adbInstance.sync();
+      try {
+        const stream = sync.read(file.path);
+        const response = new Response(stream);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = file.name;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      } finally {
+        await sync.dispose();
+      }
+    } catch (e) {
+      toast('Failed to download: ' + e.message, 'error');
+    }
   }
 
   function downloadSelected() {
@@ -412,14 +502,12 @@
   async function deleteFile(file) {
     if (!confirm('Delete "' + file.name + '"? This can\'t be undone.')) return;
     try {
-      await api('/api/delete', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: currentSerial, path: file.path }),
-      });
+      await adbInstance.subprocess.spawnAndWait(['rm', '-rf', file.path]);
       toast('Deleted ' + file.name, 'success');
       loadFiles(currentPath);
-    } catch (e) {}
+    } catch (e) {
+      toast('Failed to delete: ' + e.message, 'error');
+    }
   }
 
   async function deleteSelected() {
@@ -429,11 +517,7 @@
 
     for (const path of selectedFiles) {
       try {
-        await api('/api/delete', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ serial: currentSerial, path }),
-        });
+        await adbInstance.subprocess.spawnAndWait(['rm', '-rf', path]);
       } catch (e) {}
     }
     toast('Deleted ' + n + ' item(s)', 'success');
@@ -446,14 +530,12 @@
     if (!name || !name.trim()) return;
 
     try {
-      await api('/api/mkdir', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serial: currentSerial, path: currentPath + '/' + name.trim() }),
-      });
+      await adbInstance.subprocess.spawnAndWait(['mkdir', '-p', currentPath + '/' + name.trim()]);
       toast('Created folder', 'success');
       loadFiles(currentPath);
-    } catch (e) {}
+    } catch (e) {
+      toast('Failed to create folder: ' + e.message, 'error');
+    }
   }
 
   function toggleView() {
@@ -503,37 +585,54 @@
     if (!pendingUploads.length) return;
     btnStartUpload.disabled = true;
 
-    const form = new FormData();
-    form.append('serial', currentSerial);
-    form.append('path', currentPath);
-    pendingUploads.forEach(f => form.append('files', f));
-
     try {
-      const res = await fetch('/api/push', { method: 'POST', body: form });
-      const data = await res.json();
+      const sync = await adbInstance.sync();
+      try {
+        for (let i = 0; i < pendingUploads.length; i++) {
+          const file = pendingUploads[i];
+          const dest = currentPath + '/' + file.name;
+          const statusEl = $('#upload-status-' + i);
+          if (statusEl) statusEl.textContent = '0%';
 
-      if (data.results) {
-        data.results.forEach((r, i) => {
-          const el = $('#upload-status-' + i);
-          if (el) el.textContent = r.success ? 'done' : 'fail';
-        });
+          try {
+            let uploadedBytes = 0;
+            const progressStream = new TransformStream({
+              transform(chunk, controller) {
+                uploadedBytes += chunk.byteLength;
+                const pct = Math.round((uploadedBytes / file.size) * 100);
+                if (statusEl) statusEl.textContent = `${pct}%`;
+                controller.enqueue(chunk);
+              }
+            });
 
-        const ok = data.results.filter(r => r.success).length;
-        const fail = data.results.length - ok;
-        toast(fail > 0
-          ? 'Uploaded ' + ok + '/' + data.results.length + ' (' + fail + ' failed)'
-          : 'Uploaded ' + ok + ' file(s)', fail > 0 ? 'error' : 'success');
+            const fileStream = new WrapReadableStream(file.stream().pipeThrough(progressStream))
+              .pipeThrough(new WrapConsumableStream());
+
+            await sync.write({
+              filename: dest,
+              file: fileStream,
+              type: LinuxFileType.File,
+              permission: 0o666,
+            });
+
+            if (statusEl) statusEl.textContent = 'done';
+          } catch (e) {
+            if (statusEl) statusEl.textContent = 'fail';
+          }
+        }
+        toast('Upload finished', 'success');
+      } finally {
+        await sync.dispose();
       }
 
       loadFiles(currentPath);
       setTimeout(closeUploadModal, 1200);
     } catch (e) {
-      toast('Upload failed', 'error');
+      toast('Upload failed: ' + e.message, 'error');
       btnStartUpload.disabled = false;
     }
   }
 
-  // plain text icons, no emoji
   function getFileIcon(file) {
     if (file.isDir) return '/';
     const ext = file.name.split('.').pop().toLowerCase();
@@ -557,9 +656,17 @@
 
   function formatBytes(bytes) {
     if (!bytes || bytes === 0) return '0 B';
+    const b = Number(bytes);
     const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(1024));
-    return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+    const i = Math.floor(Math.log(b) / Math.log(1024));
+    return (b / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i];
+  }
+
+  function formatTimestamp(secondsBigInt) {
+    if (!secondsBigInt) return '';
+    const ms = Number(secondsBigInt) * 1000;
+    const d = new Date(ms);
+    return d.toISOString().split('T')[0] + ' ' + d.toTimeString().split(' ')[0].substring(0, 5);
   }
 
   function toast(msg, type) {
