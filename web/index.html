@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YeetSend — USB File Transfer</title>
+    <meta name="description" content="Transfer files between your computer and Android phone via USB.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div id="app">
+
+        <div id="welcome-screen" class="screen">
+            <header class="hero">
+                <h1>YeetSend</h1>
+                <p class="tagline">wired file transfer. no drivers needed.</p>
+            </header>
+
+            <section class="card">
+                <h2 class="card-label">Device</h2>
+                <div id="device-status" class="device-status">
+                    <span class="dot offline"></span>
+                    <span class="status-text">No device connected</span>
+                </div>
+                <button id="btn-scan" class="btn-primary">Scan for Devices</button>
+            </section>
+
+            <section class="card">
+                <h2 class="card-label">Setup</h2>
+                <ol class="setup-steps">
+                    <li>Enable <strong>USB Debugging</strong> on your phone</li>
+                    <li>Connect via <strong>USB cable</strong></li>
+                    <li>Accept the <strong>RSA key</strong> prompt</li>
+                </ol>
+            </section>
+        </div>
+
+        <div id="browser-screen" class="screen" style="display:none">
+            <header class="browser-header">
+                <div class="browser-title">
+                    <h1>YeetSend</h1>
+                    <div id="device-badge" class="device-badge">
+                        <span class="dot online"></span>
+                        <span id="device-name">Device</span>
+                    </div>
+                </div>
+                <p class="tagline">wired file transfer. no drivers needed.</p>
+            </header>
+
+            <section class="card">
+                <h2 class="card-label">Navigate</h2>
+                <div class="nav-bar">
+                    <div class="nav-left">
+                        <button id="btn-back" class="btn-icon" disabled title="Back">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                        </button>
+                        <button id="btn-up" class="btn-icon" disabled title="Up">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                        </button>
+                        <span id="current-path" class="current-path">/sdcard</span>
+                    </div>
+                    <div class="nav-right">
+                        <button id="btn-new-folder" class="btn-small">New Folder</button>
+                        <button id="btn-upload" class="btn-primary btn-sm">Upload</button>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card" id="quick-access-card">
+                <h2 class="card-label">Quick Access</h2>
+                <div id="quick-paths" class="quick-paths"></div>
+            </section>
+
+            <section class="card file-card">
+                <div class="file-card-header">
+                    <h2 class="card-label">Files</h2>
+                    <div class="file-actions">
+                        <div id="selection-info" class="selection-info" style="display:none">
+                            <span id="selection-count">0 selected</span>
+                            <button id="btn-download-selected" class="btn-small">Download</button>
+                            <button id="btn-delete-selected" class="btn-small btn-danger">Delete</button>
+                            <button id="btn-clear-selection" class="btn-small">Clear</button>
+                        </div>
+                        <button id="btn-refresh" class="btn-icon" title="Refresh">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+                        </button>
+                        <button id="btn-view-toggle" class="btn-icon" title="Toggle view">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                        </button>
+                    </div>
+                </div>
+                <div id="file-container" class="file-container list-view">
+                    <div class="loading-state" id="loading-state" style="display:none">
+                        <span class="spinner"></span>
+                        <span>Loading...</span>
+                    </div>
+                    <div id="file-list" class="file-list"></div>
+                    <div id="empty-dir" class="empty-state" style="display:none">
+                        <p>Empty directory</p>
+                    </div>
+                </div>
+            </section>
+
+            <section class="card" id="storage-card" style="display:none">
+                <h2 class="card-label">Storage</h2>
+                <div id="storage-info" class="storage-info"></div>
+            </section>
+        </div>
+
+        <div id="upload-overlay" class="overlay" style="display:none">
+            <div class="modal">
+                <div class="modal-header">
+                    <h2>Upload Files</h2>
+                    <button id="btn-close-upload" class="btn-icon">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                </div>
+                <div class="dropzone" id="upload-dropzone">
+                    <p>Drag & drop files here</p>
+                    <span class="hint">or click to browse</span>
+                    <input type="file" id="file-input" multiple style="display:none">
+                </div>
+                <div id="upload-progress" class="upload-progress" style="display:none">
+                    <div id="upload-items" class="upload-items"></div>
+                </div>
+                <div class="modal-footer">
+                    <span id="upload-dest" class="upload-dest"></span>
+                    <button id="btn-start-upload" class="btn-primary btn-sm" disabled>Upload</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="drag-overlay" class="drag-overlay" style="display:none">
+            <p>Drop to upload</p>
+        </div>
+
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>
