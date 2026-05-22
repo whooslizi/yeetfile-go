@@ -1,4 +1,4 @@
-import { Adb, LinuxFileType } from 'https://esm.sh/@yume-chan/adb';
+import { Adb, AdbDaemonTransport, LinuxFileType } from 'https://esm.sh/@yume-chan/adb';
 import { AdbDaemonWebUsbDeviceManager } from 'https://esm.sh/@yume-chan/adb-daemon-webusb';
 import AdbWebCredentialStore from 'https://esm.sh/@yume-chan/adb-credential-web';
 import { WrapConsumableStream, WrapReadableStream } from 'https://esm.sh/@yume-chan/stream-extra';
@@ -161,11 +161,13 @@ import { WrapConsumableStream, WrapReadableStream } from 'https://esm.sh/@yume-c
       const credentialStore = new AdbWebCredentialStore('yeetsend');
       toast('Please accept the RSA prompt on your phone if it appears', 'info');
 
-      adbInstance = await Adb.authenticate({
+      const connection = await device.connect();
+      const transport = await AdbDaemonTransport.authenticate({
         serial: device.serial,
-        connection: await device.connect(),
+        connection,
         credentialStore,
       });
+      adbInstance = new Adb(transport);
 
       updateDeviceStatus(true, device.name || device.serial);
       deviceNameEl.textContent = device.name || device.serial;
